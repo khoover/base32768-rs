@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 base32768 = { path = "../.." }
 js-sys = "0.3.66"
-talc = "4.0.0"
+talc = { version = "4.0.0", default-features = false, features = ["lock_api"] }
 wasm-bindgen = { version = "0.2.89", features = ["enable-interning", "serde"] }
 web-sys = { version = "0.3.66", features = ["console"] }
 
