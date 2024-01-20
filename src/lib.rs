@@ -1,12 +1,14 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::error::Error;
 use std::mem;
 
+mod bits_to_bits;
 mod data;
 mod errors;
-mod bits_to_bits;
+
+pub mod alternative;
+pub mod optimized;
 
 static POINT_LEN: usize = 15;
 
@@ -71,7 +73,7 @@ lazy_static! {
         gen_repertoires!(data::BLOCK_START_0, encode_table, decode_table);
         gen_repertoires!(data::BLOCK_START_1, encode_table, decode_table);
 
-        LookupTables{
+        LookupTables {
             lookup_encode: encode_table,
             lookup_decode: decode_table,
         }
@@ -96,7 +98,9 @@ pub fn encode(buf: &[u8]) -> Result<String, errors::Base32768Error> {
         let mut bits = b.bits;
         if bits != POINT_LEN {
             if idx != resized_bytes.len() - 1 {
-                return Err(errors::Base32768Error::new("Found partial byte midway through stream".to_owned()))
+                return Err(errors::Base32768Error::new(
+                    "Found partial byte midway through stream".to_owned(),
+                ));
             }
 
             let pad_bits = (POINT_LEN - bits) % 8;
@@ -107,21 +111,27 @@ pub fn encode(buf: &[u8]) -> Result<String, errors::Base32768Error> {
         let repertoire = (POINT_LEN - bits) / 8;
         let encode_table = LOOKUP_TABLES.lookup_encode.get(repertoire);
         if let None = encode_table {
-            return Err(errors::Base32768Error::new(format!("Unrecognized `repertoire` {}", repertoire)));
+            return Err(errors::Base32768Error::new(format!(
+                "Unrecognized `repertoire` {}",
+                repertoire
+            )));
         }
         let code_point = encode_table.unwrap().get(bytes as usize);
         if let None = code_point {
-            return Err(errors::Base32768Error::new(format!("Can't encode {}", bytes)));
+            return Err(errors::Base32768Error::new(format!(
+                "Can't encode {}",
+                bytes
+            )));
         }
 
         output.push(*code_point.unwrap());
-    };
+    }
 
     let string = String::from_utf16(&output);
     if let Err(e) = string {
-        return Err(errors::Base32768Error::new(format!("Error encoding {}", e.description())));
+        return Err(errors::Base32768Error::new(format!("Error encoding {}", e)));
     }
-    
+
     Ok(string.unwrap())
 }
 
@@ -140,7 +150,9 @@ pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base327
 
     for (byte_offset, c) in in_str.char_indices() {
         if c.len_utf16() != 1 {
-            return Err(errors::Base32768Error::new("Got invalid length for encoded character".to_owned()));
+            return Err(errors::Base32768Error::new(
+                "Got invalid length for encoded character".to_owned(),
+            ));
         }
 
         let mut b = [0; 1];
@@ -151,7 +163,9 @@ pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base327
                 if *k != std::u16::MAX {
                     if key != 0 {
                         if byte_offset != in_str.len() - 2 {
-                            return Err(errors::Base32768Error::new("Got padding character in the middle of the stream".to_owned()));
+                            return Err(errors::Base32768Error::new(
+                                "Got padding character in the middle of the stream".to_owned(),
+                            ));
                         } else {
                             last_bytes_bits = POINT_LEN - 8 * key;
                         }
@@ -160,13 +174,11 @@ pub fn decode(in_str: &str, out_vec: &mut Vec<u8>) -> Result<(), errors::Base327
                 }
             }
         }
-    };
+    }
     let sized_bytes = bits_to_bits::resize_bytes_ex(ks.as_slice(), POINT_LEN, 8, last_bytes_bits);
     for idx in 0..sized_bytes.len() {
         if sized_bytes[idx].bits == 8 {
-            out_vec.push(unsafe {
-                mem::transmute::<u16, [u8; 2]>(sized_bytes[idx].bytes)[0]
-            });
+            out_vec.push(unsafe { mem::transmute::<u16, [u8; 2]>(sized_bytes[idx].bytes)[0] });
         }
     }
 

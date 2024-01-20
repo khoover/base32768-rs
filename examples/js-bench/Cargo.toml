@@ -1,5 +1,5 @@
 [package]
-name = "base32768"
+name = "js-bench"
 version = "0.1.0"
 authors = ["Dreae <dreae@dreae.onl>"]
 description = "Encodes binary data to UTF-16 text"
@@ -10,13 +10,13 @@ license = "MIT"
 categories = ["encoding"]
 edition = '2021'
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-lazy_static = "1.4.0"
-rand = { version = "0.8.5", features = ["small_rng"] }
-getrandom = {version = "0.2.11", features = ["js"]}
-arrayvec = "0.7.4"
-itertools = "0.12.0"
+base32768 = { path = "../.." }
 js-sys = "0.3.66"
+talc = "4.0.0"
 wasm-bindgen = { version = "0.2.89", features = ["enable-interning", "serde"] }
 web-sys = { version = "0.3.66", features = ["console"] }
 
@@ -27,9 +27,13 @@ glob = "0.3.1"
 lto = true
 codegen-units = 1
 strip = true
+opt-level = 3
 
 [profile.bench]
 lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3","-c","--signext-lowering"]

@@ -20,8 +20,6 @@ impl fmt::Display for Base32768Error {
 
 impl Base32768Error {
     pub fn new(msg: String) -> Base32768Error {
-        Base32768Error {
-            msg: msg,
-        }
+        Base32768Error { msg: msg }
     }
 }
