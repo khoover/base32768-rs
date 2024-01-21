@@ -1,8 +1,11 @@
-const fromCharCode = String.fromCharCode.bind(String);
 function arr_to_str(uint16arr) {
+    console.log(uint16arr.length);
     let s = "";
     for (let i = 0; i < uint16arr.length; i += 64) {
-        s += fromCharCode.apply(uint16arr.subarray(i, i + 64));
+        console.log(uint16arr.subarray(i, i + 64));
+        let next = String.fromCharCode(...uint16arr.subarray(i, i + 64));
+        console.log(next);
+        s += next;
     }
     return s;
 }
@@ -21,6 +24,6 @@ const { test_codecs } = require("./pkg/js_bench");
 console.log(`Took ${Date.now() - start} ms to load and init bench wasm`);
 const crypto = require("crypto");
 
-const arr = new Uint8Array(3000000);
+const arr = new Uint8Array(50);
 crypto.randomFillSync(arr);
 test_codecs(arr);

@@ -58,12 +58,15 @@ fn bench_jasper_encode(bytes: &[u8]) -> f64 {
 }
 
 fn bench_jasper_decode(bytes: &[u8]) -> f64 {
-    let encoded = base32768::alternative::encode(bytes)
+    let encoded1 = base32768::alternative::encode(bytes)
         .chunks(64)
         .map(JsString::from_char_code)
         .reduce(|a, b| a.concat(&b))
         .unwrap();
-    let mut local_str: String = encoded.clone().into();
+    let encoded2 = arr_to_str(&base32768::alternative::encode(bytes));
+    console::log_2(&JsValue::from_str("broken string: "), &encoded1);
+    console::log_2(&JsValue::from_str("working string: "), &encoded2);
+    let mut local_str: String = encoded1.clone().into();
     black_box(&mut local_str);
     0.0
     // let mut local_encoded: Vec<u16> = local_str.encode_utf16().collect();
