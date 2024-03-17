@@ -15,7 +15,7 @@ fn encode_full_block(src: &[u8; CODE_LEN], dst: &mut [u16; BYTE_SIZE]) {
         });
 }
 
-fn encode_partial_block(src: &[u8], dst: &mut [u16; 8]) -> usize {
+fn encode_partial_block(src: &[u8], dst: &mut [u16; BYTE_SIZE]) -> usize {
     let mut idx = 0;
     let tables = get_lookups();
     let mut acc: u16 = 0;
