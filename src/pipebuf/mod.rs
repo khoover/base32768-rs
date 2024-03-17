@@ -47,52 +47,52 @@ fn encode_partial_block(src: &[u8], dst: &mut [u16; 8]) -> usize {
     }
 }
 
-pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32678: PBufWr<'_, u16>) -> bool {
-    let before = tripwire!(bytes, utf32678);
+pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<'_, u16>) -> bool {
+    let before = tripwire!(bytes, utf32768);
 
     if bytes.consume_push() {
-        utf32678.push();
+        utf32768.push();
     }
 
     if bytes.is_aborted() && bytes.consume_eof() {
-        utf32678.abort();
+        utf32768.abort();
     } else {
         while bytes.len() >= CODE_LEN {
             encode_full_block(
                 &bytes.data()[..CODE_LEN].try_into().unwrap(),
-                utf32678.space(BYTE_SIZE).try_into().unwrap(),
+                utf32768.space(BYTE_SIZE).try_into().unwrap(),
             );
             bytes.consume(CODE_LEN);
-            utf32678.commit(BYTE_SIZE);
+            utf32768.commit(BYTE_SIZE);
         }
         if bytes.has_pending_eof() {
             let committed =
-                encode_partial_block(bytes.data(), utf32678.space(BYTE_SIZE).try_into().unwrap());
+                encode_partial_block(bytes.data(), utf32768.space(BYTE_SIZE).try_into().unwrap());
             bytes.consume(bytes.len());
-            utf32678.commit(committed);
+            utf32768.commit(committed);
             bytes.consume_eof();
-            utf32678.close();
+            utf32768.close();
         }
     }
 
-    let after = tripwire!(bytes, utf32678);
+    let after = tripwire!(bytes, utf32768);
     before != after
 }
 
 pub fn decode_utf32768_to_u15(
-    mut utf32678: PBufRd<'_, u16>,
+    mut utf32768: PBufRd<'_, u16>,
     mut u15s: PBufWr<'_, u16>,
 ) -> Result<bool, DecoderError> {
-    let before = tripwire!(utf32678, u15s);
+    let before = tripwire!(utf32768, u15s);
 
-    if utf32678.consume_push() {
+    if utf32768.consume_push() {
         u15s.push();
     }
 
-    if utf32678.is_aborted() && utf32678.consume_eof() {
+    if utf32768.is_aborted() && utf32768.consume_eof() {
         u15s.abort();
     } else {
-        let data = utf32678.data();
+        let data = utf32768.data();
         let len = data.len();
         if len > 0 {
             let space = u15s.space(len);
@@ -114,20 +114,20 @@ pub fn decode_utf32768_to_u15(
                     Ok(())
                 })?;
 
-            utf32678.consume(len);
+            utf32768.consume(len);
             u15s.commit(len);
         }
 
-        if utf32678.consume_push() {
+        if utf32768.consume_push() {
             u15s.push();
         }
 
-        if utf32678.consume_eof() {
+        if utf32768.consume_eof() {
             u15s.close();
         }
     }
 
-    let after = tripwire!(utf32678, u15s);
+    let after = tripwire!(utf32768, u15s);
     Ok(before != after)
 }
 
