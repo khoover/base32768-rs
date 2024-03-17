@@ -9,6 +9,7 @@ mod errors;
 
 pub mod alternative;
 pub mod optimized;
+pub mod pipebuf;
 
 static POINT_LEN: usize = 15;
 

@@ -19,6 +19,7 @@ js-sys = "0.3.66"
 talc = { version = "4.0.0", default-features = false, features = ["lock_api"] }
 wasm-bindgen = { version = "0.2.89", features = ["enable-interning", "serde"] }
 web-sys = { version = "0.3.66", features = ["console"] }
+pipebuf = { version = "0.2.1", git = "https://github.com/khoover/pipebuf", branch = "generic" }
 
 [dev-dependencies]
 glob = "0.3.1"

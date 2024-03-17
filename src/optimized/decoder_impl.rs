@@ -99,7 +99,7 @@ impl<const N: usize> Buffer<N> {
 }
 
 const fn byte_count_to_u15_count(count: usize) -> usize {
-    count / 15 * 8
+    count / CODE_LEN * BYTE_SIZE
 }
 
 #[derive(Debug)]
@@ -114,7 +114,7 @@ impl<I: Iterator<Item = u16>, const N: usize> ReadDecoder<I, N> {
     where
         T: IntoIterator<Item = u16, IntoIter = I>,
     {
-        assert!(N % 15 == 0 && N > 0);
+        assert!(N % CODE_LEN == 0 && N > 0);
         Self {
             iter: iter.into_iter(),
             closed: false,
