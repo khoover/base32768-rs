@@ -1,7 +1,9 @@
 extern crate base32768;
 extern crate glob;
+extern crate pipebuf;
 extern crate rand;
 
+use pipebuf::PipeBuf;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -74,6 +76,28 @@ fn run_encode_decode_test_suite() {
                 .read_to_end(&mut read_back)
                 .unwrap();
             assert_eq!(read_back.as_slice(), bin_vec.as_slice());
+
+            let mut bytes_encoding: PipeBuf<u8> = PipeBuf::new();
+            let mut bytes_decoding: PipeBuf<u8> = PipeBuf::new();
+            let mut utf32768_buf: PipeBuf<u16> = PipeBuf::new();
+            let mut u15s_buf: PipeBuf<u16> = PipeBuf::new();
+            bytes_encoding.write_all(bin_vec.as_slice()).unwrap();
+            bytes_encoding.wr().close();
+            let mut activity = true;
+            while activity {
+                activity = base32768::pipebuf::encode_bytes_to_utf32768(
+                    bytes_encoding.rd(),
+                    utf32768_buf.wr(),
+                ) | base32768::pipebuf::decode_utf32768_to_u15(
+                    utf32768_buf.rd(),
+                    u15s_buf.wr(),
+                )
+                .unwrap()
+                    | base32768::pipebuf::decode_u15_to_bytes(u15s_buf.rd(), bytes_decoding.wr())
+                        .unwrap();
+            }
+            assert!(bytes_decoding.rd().has_pending_eof());
+            assert_eq!(bytes_decoding.rd().data(), bin_vec.as_slice());
         }
     }
 }

@@ -181,7 +181,7 @@ fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
     for _ in 0..100 {
         let mut writer = black_box(PipeBufEncoder::new(
             |mut rd| {
-                if rd.consume_push() || rd.has_pending_eof() {
+                if rd.len() >= 256 || rd.consume_push() {
                     output = output.concat(arr_to_str(rd.data()).as_ref());
                     rd.consume(rd.len());
                     rd.consume_eof();
@@ -279,7 +279,7 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
     let start = Date::now();
     for _ in 0..100 {
         let mut start = 0;
-        let reader = PipeBufDecoder::new(
+        let mut reader = PipeBufDecoder::new(
             |mut wr| {
                 if wr.is_eof() {
                     false
@@ -288,8 +288,11 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
                     true
                 } else {
                     let length = encoded.length();
-                    let written =
-                        str_to_arr(&encoded.substring(start, length), wr.space(length as usize));
+                    let chunk_size = 1024;
+                    let written = str_to_arr(
+                        &encoded.substring(start, start + chunk_size),
+                        wr.space(chunk_size as usize),
+                    );
                     wr.commit(written as usize);
                     start += written;
                     if written == length {
@@ -302,9 +305,7 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
             &mut u15s_buf,
             &mut bytes_buf,
         );
-        black_box(reader)
-            .read_to_end(black_box(&mut output))
-            .unwrap();
+        reader.read_to_end(&mut output).unwrap();
         utf32768_buf.reset();
         u15s_buf.reset();
         bytes_buf.reset();

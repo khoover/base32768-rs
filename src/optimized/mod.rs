@@ -103,7 +103,7 @@ fn make_tables() -> Box<Tables> {
 
 static LOOKUPS: OnceLock<Box<Tables>> = OnceLock::new();
 
-pub(crate) fn get_lookups() -> &'static Tables {
+pub fn get_lookups() -> &'static Tables {
     LOOKUPS.get_or_init(make_tables)
 }
 
