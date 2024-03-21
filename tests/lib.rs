@@ -79,8 +79,8 @@ fn run_encode_decode_test_suite() {
 
             let mut bytes_encoding: PipeBuf<u8> = PipeBuf::new();
             let mut bytes_decoding: PipeBuf<u8> = PipeBuf::new();
-            let mut utf32768_buf: PipeBuf<u16> = PipeBuf::new();
-            let mut u15s_buf: PipeBuf<u16> = PipeBuf::new();
+            let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(1024);
+            let mut u15s_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(1024);
             bytes_encoding.write_all(bin_vec.as_slice()).unwrap();
             bytes_encoding.wr().close();
             let mut activity = true;

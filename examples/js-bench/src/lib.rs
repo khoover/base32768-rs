@@ -161,7 +161,13 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> PipeBufEncoder<'a, F> {
 
 impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a, F> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let written = self.bytes.write(buf)?;
+        let written = self
+            .bytes
+            .wr()
+            .free_space()
+            .unwrap_or(usize::MAX)
+            .min(buf.len());
+        let written = self.bytes.write(&buf[..written])?;
         self.process();
         Ok(written)
     }
@@ -174,14 +180,15 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a,
 }
 
 fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
-    let mut bytes_buf: PipeBuf<u8> = PipeBuf::new();
-    let mut utf32768_buf: PipeBuf<u16> = PipeBuf::new();
+    const BUF_CAPACITY: usize = 1024;
+    let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
     let mut output = JsString::from("");
     let start = Date::now();
     for _ in 0..100 {
         let mut writer = black_box(PipeBufEncoder::new(
             |mut rd| {
-                if rd.len() >= 256 || rd.consume_push() {
+                if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
                     output = output.concat(arr_to_str(rd.data()).as_ref());
                     rd.consume(rd.len());
                     rd.consume_eof();
@@ -288,10 +295,14 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
                     true
                 } else {
                     let length = encoded.length();
-                    let chunk_size = 1024;
+                    let chunk_size = length;
                     let written = str_to_arr(
                         &encoded.substring(start, start + chunk_size),
-                        wr.space(chunk_size as usize),
+                        wr.space(
+                            wr.free_space()
+                                .unwrap_or(usize::MAX)
+                                .min(chunk_size as usize),
+                        ),
                     );
                     wr.commit(written as usize);
                     start += written;

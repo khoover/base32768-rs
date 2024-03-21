@@ -57,21 +57,27 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
     if bytes.is_aborted() && bytes.consume_eof() {
         utf32768.abort();
     } else {
+        let mut backpressure = false;
         while bytes.len() >= CODE_LEN {
+            let Some(space) = utf32768.maybe_space(BYTE_SIZE) else {
+                backpressure = true;
+                break;
+            };
             encode_full_block(
                 &bytes.data()[..CODE_LEN].try_into().unwrap(),
-                utf32768.space(BYTE_SIZE).try_into().unwrap(),
+                space.try_into().unwrap(),
             );
             bytes.consume(CODE_LEN);
             utf32768.commit(BYTE_SIZE);
         }
-        if bytes.has_pending_eof() {
-            let committed =
-                encode_partial_block(bytes.data(), utf32768.space(BYTE_SIZE).try_into().unwrap());
-            bytes.consume(bytes.len());
-            utf32768.commit(committed);
-            bytes.consume_eof();
-            utf32768.close();
+        if !backpressure && bytes.has_pending_eof() {
+            if let Some(space) = utf32768.maybe_space(BYTE_SIZE) {
+                let committed = encode_partial_block(bytes.data(), space.try_into().unwrap());
+                bytes.consume(bytes.len());
+                utf32768.commit(committed);
+                bytes.consume_eof();
+                utf32768.close();
+            }
         }
     }
 
@@ -93,7 +99,7 @@ pub fn decode_utf32768_to_u15(
         u15s.abort();
     } else {
         let data = utf32768.data();
-        let len = data.len();
+        let len = u15s.free_space().unwrap_or(usize::MAX).min(data.len());
         if len > 0 {
             let space = u15s.space(len);
             let tables = get_lookups();
@@ -122,7 +128,7 @@ pub fn decode_utf32768_to_u15(
             u15s.push();
         }
 
-        if utf32768.consume_eof() {
+        if utf32768.is_empty() && utf32768.consume_eof() {
             u15s.close();
         }
     }
@@ -206,27 +212,33 @@ pub fn decode_u15_to_bytes(
         let is_final =
             data.last().is_some_and(|&last| last & 0x8000 != 0) || u15s.has_pending_eof();
         let threshold = if is_final { BYTE_SIZE } else { BYTE_SIZE - 1 };
+        let mut backpressure = false;
 
         while u15s.len() > threshold {
             let chunk: &[u16; BYTE_SIZE] = u15s.data()[..BYTE_SIZE].try_into().unwrap();
             if chunk.iter().copied().any(|x| x & 0x8000 != 0) {
                 return Err(DecoderError::UnexpectedEndOfStreamMarker);
             }
-            decode_full_block(chunk, bytes.space(CODE_LEN).try_into().unwrap());
+            let Some(space) = bytes.maybe_space(CODE_LEN) else {
+                backpressure = true;
+                break;
+            };
+            decode_full_block(chunk, space.try_into().unwrap());
             bytes.commit(CODE_LEN);
             u15s.consume(BYTE_SIZE);
         }
 
-        if is_final {
+        if !backpressure && is_final {
             if bytes.is_eof() {
                 return Err(DecoderError::UnexpectedEndOfStreamMarker);
             }
-            let committed =
-                decode_partial_final_chunk(u15s.data(), bytes.space(CODE_LEN).try_into().unwrap())?;
-            u15s.consume(u15s.len());
-            u15s.consume_eof();
-            bytes.commit(committed);
-            bytes.close();
+            if let Some(space) = bytes.maybe_space(CODE_LEN) {
+                let committed = decode_partial_final_chunk(u15s.data(), space.try_into().unwrap())?;
+                u15s.consume(u15s.len());
+                u15s.consume_eof();
+                bytes.commit(committed);
+                bytes.close();
+            }
         } else if u15s.consume_push() {
             bytes.push();
         }
