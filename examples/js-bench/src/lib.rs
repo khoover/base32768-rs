@@ -31,6 +31,7 @@ pub fn test_codecs(random_bytes: &Uint8Array) {
     let optimized_encode_time = bench_optimized_write_encode(&local_bytes);
     let optimized_decode_time = bench_optimized_read_decode(&local_bytes);
     let pipebuf_encode_time = bench_pipebuf_write_encode(&local_bytes);
+    let pipebuf_into_encode_time = bench_pipebuf_write_encode_using_into(&local_bytes);
     let pipebuf_decode_time = bench_pipebuf_read_decode(&local_bytes);
     console::log_1(&JsValue::from_str("Runtimes:"));
     console::log_1(&JsValue::from_str(&format!(
@@ -52,6 +53,10 @@ pub fn test_codecs(random_bytes: &Uint8Array) {
     console::log_1(&JsValue::from_str(&format!(
         "Pipebuf encode: {:.3}ms/iter",
         pipebuf_encode_time
+    )));
+    console::log_1(&JsValue::from_str(&format!(
+        "Pipebuf encode using JsString::from: {:.3}ms/iter",
+        pipebuf_into_encode_time
     )));
     console::log_1(&JsValue::from_str(&format!(
         "Pipebuf decode: {:.3}ms/iter",
@@ -190,6 +195,44 @@ fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
             |mut rd| {
                 if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
                     output = output.concat(arr_to_str(rd.data()).as_ref());
+                    rd.consume(rd.len());
+                    rd.consume_eof();
+                    true
+                } else {
+                    false
+                }
+            },
+            &mut bytes_buf,
+            &mut utf32768_buf,
+        ));
+        writer.write_all(black_box(bytes)).unwrap();
+        writer.close();
+        output = JsString::from("");
+        bytes_buf.reset();
+        utf32768_buf.reset();
+    }
+    (Date::now() - start) / 100.0
+}
+
+fn bench_pipebuf_write_encode_using_into(bytes: &[u8]) -> f64 {
+    let mut bytes_buf = PipeBuf::new();
+    let mut utf32768_buf = PipeBuf::new();
+    // const BUF_CAPACITY: usize = 1024;
+    // let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    // let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    let mut output = JsString::from("");
+    let mut buffer_str = String::new();
+    let start = Date::now();
+    for _ in 0..100 {
+        let mut writer = black_box(PipeBufEncoder::new(
+            |mut rd| {
+                if rd.consume_push() || rd.has_pending_eof() {
+                    // if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
+                    buffer_str.clear();
+                    buffer_str.extend(
+                        std::char::decode_utf16(rd.data().iter().copied()).map(Result::unwrap),
+                    );
+                    output = output.concat(JsString::from(buffer_str.as_str()).as_ref());
                     rd.consume(rd.len());
                     rd.consume_eof();
                     true

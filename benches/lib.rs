@@ -391,3 +391,44 @@ fn bench_pipebuf_write_encode_with_cap(b: &mut Bencher) {
         buf2.reset();
     })
 }
+
+#[bench]
+fn bench_pipebuf_write_encode_half_cap(b: &mut Bencher) {
+    let mut byte_vec = vec![0u8; 3_000_000];
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(42023241994);
+    rng.fill(&mut byte_vec[..]);
+    let mut start = 0;
+    let slices: Vec<&[u8]> = std::iter::from_fn(|| {
+        (start < byte_vec.len()).then(|| {
+            let len = rng.gen_range(1..100);
+            let next_start = byte_vec.len().min(start + len);
+            let res = &byte_vec[start..next_start];
+            start = next_start;
+            res
+        })
+    })
+    .collect();
+    let mut buf1 = PipeBuf::with_fixed_capacity(1024);
+    let mut buf2 = PipeBuf::new();
+    b.iter(|| {
+        let mut writer = PipeBufEncoder::new(
+            |mut rd| {
+                let before = rd.tripwire();
+                rd.consume_push();
+                if rd.consume_eof() {
+                    rd.consume(rd.len());
+                }
+                rd.is_tripped(before)
+            },
+            &mut buf1,
+            &mut buf2,
+        );
+        let mut byte_vec_slice = byte_vec.as_slice();
+        for slice in slices.iter().copied() {
+            writer.write_all(slice).unwrap();
+        }
+        writer.close();
+        buf1.reset();
+        buf2.reset();
+    })
+}

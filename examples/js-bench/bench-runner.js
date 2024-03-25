@@ -1,3 +1,4 @@
+require("./EncoderDecoderTogether.src")
 function arr_to_str(uint16arr) {
     let s = "";
     for (let i = 0; i < uint16arr.length; i += 256) {
