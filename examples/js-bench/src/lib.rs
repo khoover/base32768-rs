@@ -32,6 +32,7 @@ pub fn test_codecs(random_bytes: &Uint8Array) {
     let optimized_decode_time = bench_optimized_read_decode(&local_bytes);
     let pipebuf_encode_time = bench_pipebuf_write_encode(&local_bytes);
     let pipebuf_into_encode_time = bench_pipebuf_write_encode_using_into(&local_bytes);
+    let pipebuf_utf8_into_encode_time = bench_pipebuf_write_encode_using_utf8(&local_bytes);
     let pipebuf_decode_time = bench_pipebuf_read_decode(&local_bytes);
     console::log_1(&JsValue::from_str("Runtimes:"));
     console::log_1(&JsValue::from_str(&format!(
@@ -59,11 +60,16 @@ pub fn test_codecs(random_bytes: &Uint8Array) {
         pipebuf_into_encode_time
     )));
     console::log_1(&JsValue::from_str(&format!(
+        "Pipebuf encode using UTF8 and JsString::from: {:.3}ms/iter",
+        pipebuf_utf8_into_encode_time
+    )));
+    console::log_1(&JsValue::from_str(&format!(
         "Pipebuf decode: {:.3}ms/iter",
         pipebuf_decode_time
     )));
 }
 
+#[inline(never)]
 fn bench_jasper_encode(bytes: &[u8]) -> f64 {
     let start = Date::now();
     for _ in 0..100 {
@@ -73,6 +79,7 @@ fn bench_jasper_encode(bytes: &[u8]) -> f64 {
     (Date::now() - start) / 100.0
 }
 
+#[inline(never)]
 fn bench_jasper_decode(bytes: &[u8]) -> f64 {
     let encoded = base32768::alternative::encode(bytes)
         .chunks(64)
@@ -96,6 +103,7 @@ fn bench_jasper_decode(bytes: &[u8]) -> f64 {
     (Date::now() - start) / 100.0
 }
 
+#[inline(never)]
 fn bench_optimized_write_encode(bytes: &[u8]) -> f64 {
     let start = Date::now();
     let mut output = Vec::new();
@@ -109,6 +117,7 @@ fn bench_optimized_write_encode(bytes: &[u8]) -> f64 {
     (Date::now() - start) / 100.0
 }
 
+#[inline(never)]
 fn bench_optimized_read_decode(bytes: &[u8]) -> f64 {
     let mut writer = base32768::optimized::WriteEncoder::new(
         base32768::optimized::BufferedJsString::<1024>::new(),
@@ -184,6 +193,7 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a,
     }
 }
 
+#[inline(never)]
 fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
     const BUF_CAPACITY: usize = 1024;
     let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
@@ -214,25 +224,110 @@ fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
     (Date::now() - start) / 100.0
 }
 
+#[inline(never)]
 fn bench_pipebuf_write_encode_using_into(bytes: &[u8]) -> f64 {
-    let mut bytes_buf = PipeBuf::new();
-    let mut utf32768_buf = PipeBuf::new();
-    // const BUF_CAPACITY: usize = 1024;
-    // let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
-    // let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    // let mut bytes_buf = PipeBuf::new();
+    // let mut utf32768_buf = PipeBuf::new();
+    const BUF_CAPACITY: usize = 2048;
+    let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
     let mut output = JsString::from("");
-    let mut buffer_str = String::new();
+    let mut buffer_str = String::with_capacity(BUF_CAPACITY * 3);
     let start = Date::now();
     for _ in 0..100 {
         let mut writer = black_box(PipeBufEncoder::new(
             |mut rd| {
-                if rd.consume_push() || rd.has_pending_eof() {
-                    // if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
+                // if rd.consume_push() || rd.has_pending_eof() {
+                if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
                     buffer_str.clear();
                     buffer_str.extend(
                         std::char::decode_utf16(rd.data().iter().copied()).map(Result::unwrap),
                     );
                     output = output.concat(JsString::from(buffer_str.as_str()).as_ref());
+                    rd.consume(rd.len());
+                    rd.consume_eof();
+                    true
+                } else {
+                    false
+                }
+            },
+            &mut bytes_buf,
+            &mut utf32768_buf,
+        ));
+        writer.write_all(black_box(bytes)).unwrap();
+        writer.close();
+        output = JsString::from("");
+        bytes_buf.reset();
+        utf32768_buf.reset();
+    }
+    (Date::now() - start) / 100.0
+}
+
+struct PipeBufUtf8Encoder<'a, F> {
+    bytes: &'a mut PipeBuf<u8>,
+    utf32768: &'a mut PipeBuf<u8>,
+    sink: F,
+}
+
+impl<'a, F: for<'b> FnMut(PBufRd<'b, u8>) -> bool> PipeBufUtf8Encoder<'a, F> {
+    fn new(sink: F, bytes: &'a mut PipeBuf<u8>, utf32768: &'a mut PipeBuf<u8>) -> Self {
+        Self {
+            sink,
+            bytes,
+            utf32768,
+        }
+    }
+
+    fn process(&mut self) {
+        let mut activity = true;
+        while activity && !(self.bytes.is_done() && self.utf32768.is_done()) {
+            activity = base32768::pipebuf::encode_bytes_to_base32768_utf8(
+                self.bytes.rd(),
+                self.utf32768.wr(),
+            ) | (self.sink)(self.utf32768.rd());
+        }
+    }
+
+    fn close(mut self) {
+        self.bytes.wr().close();
+        self.process();
+    }
+}
+
+impl<'a, F: for<'b> FnMut(PBufRd<'b, u8>) -> bool> Write for PipeBufUtf8Encoder<'a, F> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let capacity = match self.bytes.wr().free_space() {
+            Some(free_space) => free_space.min(buf.len()),
+            None => buf.len(),
+        };
+        let written = self.bytes.write(&buf[..capacity])?;
+        self.process();
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.bytes.set_push(true);
+        self.process();
+        Ok(())
+    }
+}
+
+#[inline(never)]
+fn bench_pipebuf_write_encode_using_utf8(bytes: &[u8]) -> f64 {
+    // let mut bytes_buf = PipeBuf::new();
+    // let mut utf32768_buf = PipeBuf::new();
+    const BUF_CAPACITY: usize = 2048;
+    let mut bytes_buf = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    let mut utf32768_buf = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    let mut output = JsString::from("");
+    let start = Date::now();
+    for _ in 0..100 {
+        let mut writer = black_box(PipeBufUtf8Encoder::new(
+            |mut rd| {
+                // if rd.consume_push() || rd.has_pending_eof() {
+                if rd.consume_push() || rd.has_pending_eof() || rd.len() >= (3 * BUF_CAPACITY) / 4 {
+                    let s = unsafe { std::str::from_utf8_unchecked(rd.data()) };
+                    output = output.concat(JsString::from(s).as_ref());
                     rd.consume(rd.len());
                     rd.consume_eof();
                     true
@@ -298,6 +393,7 @@ impl<'a, F: for<'b> FnMut(PBufWr<'b, u16>) -> bool> Read for PipeBufDecoder<'a, 
     }
 }
 
+#[inline(never)]
 fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
     let mut utf32768_buf = PipeBuf::new();
     let mut u15s_buf = PipeBuf::new();

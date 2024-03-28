@@ -1,5 +1,5 @@
 /** @define {boolean} */
-var ENCODEINTO_BUILD = false;
+var ENCODEINTO_BUILD = true;
 
 (function (window) {
 	"use strict";

@@ -247,3 +247,97 @@ pub fn decode_u15_to_bytes(
     let after = tripwire!(u15s, bytes);
     Ok(before != after)
 }
+
+fn encode_full_block_utf8(src: &[u8; CODE_LEN], dst: &mut PBufWr<'_, u8>) {
+    let tables = get_lookups();
+    let block = u128::from_le_bytes([
+        src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8], src[9], src[10],
+        src[11], src[12], src[13], src[14], 0,
+    ]);
+    (0..8)
+        .map(|idx| {
+            let u15 = (block >> (idx * CODE_LEN)) as usize & 0x7FFF;
+            let encoding = tables.long_encode[u15] as u32;
+            char::from_u32(encoding).unwrap()
+        })
+        .for_each(|c| {
+            let written = c.encode_utf8(dst.space(3)).len();
+            dst.commit(written);
+        });
+}
+
+fn encode_partial_block_utf8(src: &[u8], dst: &mut PBufWr<'_, u8>) {
+    let tables = get_lookups();
+    let mut acc: u16 = 0;
+    let mut used_bits = 0_u8;
+
+    for byte in src.iter().copied() {
+        acc |= (byte as u16) << used_bits;
+        used_bits += BYTE_SIZE as u8;
+        if used_bits >= CODE_LEN as u8 {
+            let written = tables.long_encode_char[(acc & 0x7FFF) as usize]
+                .encode_utf8(dst.space(3))
+                .len();
+            dst.commit(written);
+            used_bits -= CODE_LEN as u8;
+            acc = (byte.rotate_left(used_bits as u32) & !(0xFF << used_bits)) as u16;
+        }
+    }
+
+    acc |= 0xFFFF << used_bits;
+    let encoded = match used_bits as usize {
+        1..=SMALL_LEN => tables.short_encode_char[(acc & 0x7F) as usize],
+        CODE_LEN => unreachable!(),
+        0 => {
+            return;
+        }
+        _ => tables.long_encode_char[(acc & 0x7FFF) as usize],
+    };
+    let written = encoded.encode_utf8(dst.space(3)).len();
+    dst.commit(written);
+}
+
+pub fn encode_bytes_to_base32768_utf8(
+    mut bytes: PBufRd<'_, u8>,
+    mut base32768: PBufWr<'_, u8>,
+) -> bool {
+    let before = tripwire!(bytes, base32768);
+
+    if bytes.consume_push() {
+        base32768.push();
+    }
+
+    if bytes.is_aborted() && bytes.consume_eof() {
+        base32768.abort();
+    } else {
+        let mut backpressure = false;
+        while bytes.len() >= CODE_LEN {
+            if base32768
+                .free_space()
+                .is_some_and(|free_space| free_space < 24)
+            {
+                backpressure = true;
+                break;
+            }
+            encode_full_block_utf8(
+                &bytes.data()[..CODE_LEN].try_into().unwrap(),
+                &mut base32768,
+            );
+            bytes.consume(CODE_LEN);
+        }
+        if !backpressure
+            && bytes.has_pending_eof()
+            && !base32768
+                .free_space()
+                .is_some_and(|free_space| free_space < 24)
+        {
+            encode_partial_block_utf8(bytes.data(), &mut base32768);
+            bytes.consume(bytes.len());
+            bytes.consume_eof();
+            base32768.close();
+        }
+    }
+
+    let after = tripwire!(bytes, base32768);
+    before != after
+}

@@ -10,6 +10,8 @@ pub(crate) const BYTE_SIZE: usize = 8;
 pub struct Tables {
     pub long_encode: [u16; 1 << CODE_LEN],
     pub short_encode: [u16; 1 << SMALL_LEN],
+    pub long_encode_char: [char; 1 << CODE_LEN],
+    pub short_encode_char: [char; 1 << SMALL_LEN],
     pub decode: [u16; 42183],
 }
 
@@ -22,6 +24,7 @@ fn make_tables() -> Box<Tables> {
     let decode_ptr = unsafe { addr_of_mut!((*tables_ptr).decode) as *mut u16 };
 
     let long_encode_ptr = unsafe { addr_of_mut!((*tables_ptr).long_encode) as *mut u16 };
+    let long_encode_char_ptr = unsafe { addr_of_mut!((*tables_ptr).long_encode_char) as *mut char };
     let mut ranges: [Range<u16>; 49] = [
         19904..40892,
         13312..19894,
@@ -81,10 +84,15 @@ fn make_tables() -> Box<Tables> {
         .for_each(|(idx, code)| unsafe {
             debug_assert!(code < 42183);
             long_encode_ptr.add(idx).write(code);
+            long_encode_char_ptr
+                .add(idx)
+                .write(unsafe { std::char::from_u32_unchecked(code as u32) });
             decode_ptr.offset(code as isize).write(idx as u16);
         });
 
     let short_encode_ptr = unsafe { addr_of_mut!((*tables_ptr).short_encode) as *mut u16 };
+    let short_encode_char_ptr =
+        unsafe { addr_of_mut!((*tables_ptr).short_encode_char) as *mut char };
     let mut ranges: [Range<u16>; 4] = [9143..9180, 10025..10060, 4096..4130, 7545..7579];
     ranges
         .iter_mut()
@@ -94,6 +102,9 @@ fn make_tables() -> Box<Tables> {
         .for_each(|(idx, code)| unsafe {
             debug_assert!(code < 42183);
             short_encode_ptr.add(idx).write(code);
+            short_encode_char_ptr
+                .add(idx)
+                .write(unsafe { std::char::from_u32_unchecked(code as u32) });
             decode_ptr.offset(code as isize).write(idx as u16 | 0x8000);
         });
 
