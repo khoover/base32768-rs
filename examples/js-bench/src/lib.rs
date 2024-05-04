@@ -1,6 +1,7 @@
 use base32768::{self, optimized::DecoderError};
 use js_sys::{Date, JsString, Uint8Array};
 use pipebuf::{PBufRd, PBufWr, PipeBuf};
+use rand::{Rng, SeedableRng};
 use std::{
     hint::black_box,
     io::{ErrorKind, Read, Write},
@@ -8,13 +9,18 @@ use std::{
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
+// #[cfg(target_family = "wasm")]
+// #[global_allocator]
+// static ALLOCATOR: talc::Talck<talc::locking::AssumeUnlockable, talc::WasmHandler> =
+//     talc::Talc::new(unsafe { talc::WasmHandler::new() }).lock();
+
 #[cfg(target_family = "wasm")]
 #[global_allocator]
-static ALLOCATOR: talc::Talck<talc::locking::AssumeUnlockable, talc::WasmHandler> = {
-    // static mut MEMORY: [std::mem::MaybeUninit<u8>; 128 * 1024 * 1024] =
-    //     [std::mem::MaybeUninit::uninit(); 128 * 1024 * 1024];
-    // let span = talc::Span::from_base_size(unsafe { MEMORY.as_ptr() as *mut _ }, 128 * 1024 * 1024);
-    talc::Talc::new(unsafe { talc::WasmHandler::new() }).lock()
+static ALLOCATOR: talc::Talck<talc::locking::AssumeUnlockable, talc::ClaimOnOom> = {
+    static mut MEMORY: [std::mem::MaybeUninit<u8>; 128 * 1024 * 1024] =
+        [std::mem::MaybeUninit::uninit(); 128 * 1024 * 1024];
+    let span = talc::Span::from_base_size(unsafe { MEMORY.as_ptr() as *mut _ }, 128 * 1024 * 1024);
+    talc::Talc::new(unsafe { talc::ClaimOnOom::new(span) }).lock()
 };
 
 #[wasm_bindgen]
@@ -107,9 +113,25 @@ fn bench_jasper_decode(bytes: &[u8]) -> f64 {
 fn bench_optimized_write_encode(bytes: &[u8]) -> f64 {
     let start = Date::now();
     let mut output = Vec::new();
+    let slices: Vec<&[u8]> = {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42023241994);
+        let mut start = 0;
+        std::iter::from_fn(|| {
+            (start < bytes.len()).then(|| {
+                let len = rng.gen_range(1..20);
+                let next_start = bytes.len().min(start + len);
+                let res = &bytes[start..next_start];
+                start = next_start;
+                res
+            })
+        })
+        .collect()
+    };
     for _ in 0..100 {
         let mut writer = black_box(base32768::optimized::WriteEncoder::new_by_ref(&mut output));
-        writer.write_all(black_box(bytes)).unwrap();
+        for slice in slices.iter().copied() {
+            writer.write_all(slice).unwrap();
+        }
         writer.finish();
         black_box(arr_to_str(&output));
         output.clear();
@@ -175,15 +197,19 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> PipeBufEncoder<'a, F> {
 
 impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a, F> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let written = self
-            .bytes
-            .wr()
-            .free_space()
-            .unwrap_or(usize::MAX)
-            .min(buf.len());
+        let mut written = match self.bytes.wr().free_space() {
+            None => buf.len(),
+            Some(len) => len.min(buf.len()),
+        };
+        if written == 0 {
+            self.process();
+            written = match self.bytes.wr().free_space() {
+                None => buf.len(),
+                Some(len) => len.min(buf.len()),
+            };
+        }
         let written = self.bytes.write(&buf[..written])?;
-        self.process();
-        Ok(written)
+        return Ok(written);
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -195,16 +221,33 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a,
 
 #[inline(never)]
 fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
-    const BUF_CAPACITY: usize = 1024;
-    let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
-    let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    // let mut bytes_buf = PipeBuf::new();
+    let mut utf32768_buf = PipeBuf::new();
+    // const BUF_CAPACITY: usize = 2048;
+    let mut bytes_buf: PipeBuf<u8> = PipeBuf::with_fixed_capacity(960);
+    //let mut utf32768_buf: PipeBuf<u16> = PipeBuf::with_fixed_capacity(512);
+    let slices: Vec<&[u8]> = {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42023241994);
+        let mut start = 0;
+        std::iter::from_fn(|| {
+            (start < bytes.len()).then(|| {
+                let len = rng.gen_range(1..20);
+                let next_start = bytes.len().min(start + len);
+                let res = &bytes[start..next_start];
+                start = next_start;
+                res
+            })
+        })
+        .collect()
+    };
     let mut output = JsString::from("");
     let start = Date::now();
     for _ in 0..100 {
         let mut writer = black_box(PipeBufEncoder::new(
             |mut rd| {
-                if rd.consume_push() || rd.has_pending_eof() || rd.len() >= BUF_CAPACITY / 2 {
-                    output = output.concat(arr_to_str(rd.data()).as_ref());
+                if rd.consume_push() || rd.has_pending_eof() {
+                    //if rd.consume_push() || rd.has_pending_eof() || rd.len() >= 480 {
+                    output = black_box(arr_to_str(rd.data()));
                     rd.consume(rd.len());
                     rd.consume_eof();
                     true
@@ -215,7 +258,9 @@ fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
             &mut bytes_buf,
             &mut utf32768_buf,
         ));
-        writer.write_all(black_box(bytes)).unwrap();
+        for slice in slices.iter().copied() {
+            writer.write_all(slice).unwrap();
+        }
         writer.close();
         output = JsString::from("");
         bytes_buf.reset();
@@ -296,13 +341,18 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u8>) -> bool> PipeBufUtf8Encoder<'a, F> {
 
 impl<'a, F: for<'b> FnMut(PBufRd<'b, u8>) -> bool> Write for PipeBufUtf8Encoder<'a, F> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let capacity = match self.bytes.wr().free_space() {
-            Some(free_space) => free_space.min(buf.len()),
-            None => buf.len(),
-        };
-        let written = self.bytes.write(&buf[..capacity])?;
-        self.process();
-        Ok(written)
+        loop {
+            let written = match self.bytes.wr().free_space() {
+                None => buf.len(),
+                Some(len) => len.min(buf.len()),
+            };
+            if written == 0 {
+                self.process();
+                continue;
+            }
+            let written = self.bytes.write(&buf[..written])?;
+            return Ok(written);
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

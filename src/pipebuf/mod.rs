@@ -59,7 +59,7 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
     } else {
         let mut backpressure = false;
         while bytes.len() >= CODE_LEN {
-            let Some(space) = utf32768.maybe_space(BYTE_SIZE) else {
+            let Some(space) = utf32768.try_space(BYTE_SIZE) else {
                 backpressure = true;
                 break;
             };
@@ -71,7 +71,7 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
             utf32768.commit(BYTE_SIZE);
         }
         if !backpressure && bytes.has_pending_eof() {
-            if let Some(space) = utf32768.maybe_space(BYTE_SIZE) {
+            if let Some(space) = utf32768.try_space(BYTE_SIZE) {
                 let committed = encode_partial_block(bytes.data(), space.try_into().unwrap());
                 bytes.consume(bytes.len());
                 utf32768.commit(committed);
@@ -99,11 +99,12 @@ pub fn decode_utf32768_to_u15(
         u15s.abort();
     } else {
         let data = utf32768.data();
-        let len = u15s.free_space().unwrap_or(usize::MAX).min(data.len());
+        let len = free_space_sizing(u15s.free_space(), data.len());
         if len > 0 {
             let space = u15s.space(len);
             let tables = get_lookups();
 
+            let mut err: Option<DecoderError> = None;
             data.iter()
                 .copied()
                 .map(|encoded| {
@@ -112,14 +113,19 @@ pub fn decode_utf32768_to_u15(
                         .get(encoded as usize)
                         .copied()
                         .filter(|&x| x != 0xFFFF)
-                        .ok_or(DecoderError::InvalidCodePoint(encoded))
+                        .unwrap_or_else(|| {
+                            err = Some(DecoderError::InvalidCodePoint(encoded));
+                            0xFFFF
+                        })
                 })
                 .zip(space.iter_mut())
-                .try_for_each(|(val_or_err, place)| {
-                    *place = val_or_err?;
-                    Ok(())
-                })?;
+                .for_each(|(val, place)| {
+                    *place = val;
+                });
 
+            if let Some(e) = err {
+                return Err(e);
+            }
             utf32768.consume(len);
             u15s.commit(len);
         }
@@ -219,7 +225,7 @@ pub fn decode_u15_to_bytes(
             if chunk.iter().copied().any(|x| x & 0x8000 != 0) {
                 return Err(DecoderError::UnexpectedEndOfStreamMarker);
             }
-            let Some(space) = bytes.maybe_space(CODE_LEN) else {
+            let Some(space) = bytes.try_space(CODE_LEN) else {
                 backpressure = true;
                 break;
             };
@@ -232,7 +238,7 @@ pub fn decode_u15_to_bytes(
             if bytes.is_eof() {
                 return Err(DecoderError::UnexpectedEndOfStreamMarker);
             }
-            if let Some(space) = bytes.maybe_space(CODE_LEN) {
+            if let Some(space) = bytes.try_space(CODE_LEN) {
                 let committed = decode_partial_final_chunk(u15s.data(), space.try_into().unwrap())?;
                 u15s.consume(u15s.len());
                 u15s.consume_eof();
@@ -340,4 +346,11 @@ pub fn encode_bytes_to_base32768_utf8(
 
     let after = tripwire!(bytes, base32768);
     before != after
+}
+
+fn free_space_sizing(free_space: Option<usize>, target_space: usize) -> usize {
+    match free_space {
+        None => target_space,
+        Some(x) => x.min(target_space),
+    }
 }

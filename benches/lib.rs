@@ -80,6 +80,7 @@ fn bench_optimized_write_encode(b: &mut Bencher) {
             writer.write_all(slice).unwrap();
         }
         writer.finish();
+        black_box(String::from_utf16(output.as_slice()).unwrap());
         output.clear();
     })
 }
@@ -169,6 +170,13 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> PipeBufEncoder<'a, F> {
         }
     }
 
+    fn free_write_space(&mut self, buf_len: usize) -> usize {
+        match self.bytes.wr().free_space() {
+            None => buf_len,
+            Some(len) => len.min(buf_len),
+        }
+    }
+
     fn close(mut self) {
         self.bytes.wr().close();
         self.process();
@@ -177,20 +185,15 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> PipeBufEncoder<'a, F> {
 
 impl<'a, F: for<'b> FnMut(PBufRd<'b, u16>) -> bool> Write for PipeBufEncoder<'a, F> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        loop {
-            let written = self
-                .bytes
-                .wr()
-                .free_space()
-                .unwrap_or(usize::MAX)
-                .min(buf.len());
+        let mut written = self.free_write_space(buf.len());
+        if written == 0 {
+            self.process();
+            written = self.free_write_space(buf.len());
             if written == 0 {
-                self.process();
-                continue;
+                return Ok(0);
             }
-            let written = self.bytes.write(&buf[..written])?;
-            return Ok(written);
         }
+        return self.bytes.write(&buf[..written]);
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -282,7 +285,7 @@ fn bench_pipebuf_read_decode_with_cap(b: &mut Bencher) {
 
     let mut buf1 = PipeBuf::with_fixed_capacity(512);
     let mut buf2 = PipeBuf::with_fixed_capacity(512);
-    let mut buf3 = PipeBuf::with_fixed_capacity(1024);
+    let mut buf3 = PipeBuf::with_fixed_capacity(960);
     b.iter(|| {
         black_box(&mut byte_vec).clear();
         let mut encoded_slice = encoded.as_slice();
@@ -332,13 +335,17 @@ fn bench_pipebuf_write_encode_no_cap(b: &mut Bencher) {
     .collect();
     let mut buf1 = PipeBuf::new();
     let mut buf2 = PipeBuf::new();
+    let mut s = String::with_capacity(3_000_000);
     b.iter(|| {
         let mut writer = PipeBufEncoder::new(
             |mut rd| {
-                let before = rd.tripwire();
-                rd.consume_push();
-                rd.consume_eof();
-                rd.is_tripped(before)
+                if rd.consume_push() || rd.consume_eof() {
+                    s += String::from_utf16(rd.data()).unwrap().as_str();
+                    rd.consume(rd.len());
+                    true
+                } else {
+                    false
+                }
             },
             &mut buf1,
             &mut buf2,
@@ -349,6 +356,7 @@ fn bench_pipebuf_write_encode_no_cap(b: &mut Bencher) {
         writer.close();
         buf1.reset();
         buf2.reset();
+        s.clear();
     })
 }
 
@@ -368,16 +376,19 @@ fn bench_pipebuf_write_encode_with_cap(b: &mut Bencher) {
         })
     })
     .collect();
-    let mut buf1 = PipeBuf::with_fixed_capacity(1024);
+    let mut buf1 = PipeBuf::with_fixed_capacity(960);
     let mut buf2 = PipeBuf::with_fixed_capacity(512);
+    let mut s = String::with_capacity(3_000_000);
     b.iter(|| {
         let mut writer = PipeBufEncoder::new(
             |mut rd| {
-                let before = rd.tripwire();
-                rd.consume_push();
-                rd.consume_eof();
-                rd.consume(rd.len());
-                rd.is_tripped(before)
+                if rd.consume_push() || rd.consume_eof() || rd.len() >= 480 {
+                    s += String::from_utf16(rd.data()).unwrap().as_str();
+                    rd.consume(rd.len());
+                    true
+                } else {
+                    false
+                }
             },
             &mut buf1,
             &mut buf2,
@@ -389,6 +400,7 @@ fn bench_pipebuf_write_encode_with_cap(b: &mut Bencher) {
         writer.close();
         buf1.reset();
         buf2.reset();
+        s.clear();
     })
 }
 
@@ -400,7 +412,7 @@ fn bench_pipebuf_write_encode_half_cap(b: &mut Bencher) {
     let mut start = 0;
     let slices: Vec<&[u8]> = std::iter::from_fn(|| {
         (start < byte_vec.len()).then(|| {
-            let len = rng.gen_range(1..100);
+            let len = rng.gen_range(1..20);
             let next_start = byte_vec.len().min(start + len);
             let res = &byte_vec[start..next_start];
             start = next_start;
@@ -410,15 +422,17 @@ fn bench_pipebuf_write_encode_half_cap(b: &mut Bencher) {
     .collect();
     let mut buf1 = PipeBuf::with_fixed_capacity(1024);
     let mut buf2 = PipeBuf::new();
+    let mut s = String::with_capacity(3_000_000);
     b.iter(|| {
         let mut writer = PipeBufEncoder::new(
             |mut rd| {
-                let before = rd.tripwire();
-                rd.consume_push();
-                if rd.consume_eof() {
+                if rd.consume_push() || rd.consume_eof() {
+                    s += String::from_utf16(rd.data()).unwrap().as_str();
                     rd.consume(rd.len());
+                    true
+                } else {
+                    false
                 }
-                rd.is_tripped(before)
             },
             &mut buf1,
             &mut buf2,
@@ -430,5 +444,6 @@ fn bench_pipebuf_write_encode_half_cap(b: &mut Bencher) {
         writer.close();
         buf1.reset();
         buf2.reset();
+        s.clear();
     })
 }

@@ -1,9 +1,9 @@
 require("./EncoderDecoderTogether.src")
-fromCharCode = String.fromCharCode.bind(String)
+const block_size = 512;
 function arr_to_str(uint16arr) {
     let s = "";
-    for (let i = 0; i < uint16arr.length; i += 256) {
-        s += fromCharCode.apply(null, uint16arr.subarray(i, i + 256));
+    for (let i = 0; i < uint16arr.length; i += block_size) {
+        s += String.fromCharCode.apply(null, uint16arr.subarray(i, i + block_size));
     }
     return s;
 }
