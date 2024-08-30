@@ -2,7 +2,7 @@ use crate::optimized::{get_lookups, DecoderError, BYTE_SIZE, CODE_LEN, SMALL_LEN
 use pipebuf::{tripwire, PBufRd, PBufWr};
 
 fn encode_full_block(src: &[u8; CODE_LEN], dst: &mut [u16; BYTE_SIZE]) {
-    let tables = get_lookups();
+    let table = &get_lookups().long_encode;
     let block = u128::from_le_bytes([
         src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8], src[9], src[10],
         src[11], src[12], src[13], src[14], 0,
@@ -11,7 +11,7 @@ fn encode_full_block(src: &[u8; CODE_LEN], dst: &mut [u16; BYTE_SIZE]) {
         .enumerate()
         .map(|(idx, place)| (idx * CODE_LEN, place))
         .for_each(|(shift, place)| {
-            *place = tables.long_encode[(block >> shift) as usize & 0x7FFF];
+            *place = table[(block >> shift) as usize & 0x7FFF];
         });
 }
 
@@ -57,11 +57,12 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
     if bytes.is_aborted() && bytes.consume_eof() {
         utf32768.abort();
     } else {
-        let mut backpressure = false;
-        while bytes.len() >= CODE_LEN {
+        let backpressure = loop {
+            if bytes.len() < CODE_LEN {
+                break false;
+            }
             let Some(space) = utf32768.try_space(BYTE_SIZE) else {
-                backpressure = true;
-                break;
+                break true;
             };
             encode_full_block(
                 &bytes.data()[..CODE_LEN].try_into().unwrap(),
@@ -69,7 +70,7 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
             );
             bytes.consume(CODE_LEN);
             utf32768.commit(BYTE_SIZE);
-        }
+        };
         if !backpressure && bytes.has_pending_eof() {
             if let Some(space) = utf32768.try_space(BYTE_SIZE) {
                 let committed = encode_partial_block(bytes.data(), space.try_into().unwrap());
@@ -85,15 +86,34 @@ pub fn encode_bytes_to_utf32768(mut bytes: PBufRd<'_, u8>, mut utf32768: PBufWr<
     before != after
 }
 
+fn decode_utf32768_stream(utf32768: &[u16], u15s: &mut [u16]) -> Option<DecoderError> {
+    let table = &get_lookups().decode;
+    let mut err: Option<DecoderError> = None;
+    utf32768
+        .iter()
+        .copied()
+        .map(|encoded| {
+            table
+                .get(encoded as usize)
+                .copied()
+                .filter(|&x| x != 0xFFFF)
+                .unwrap_or_else(|| {
+                    err = Some(DecoderError::InvalidCodePoint(encoded));
+                    0xFFFF
+                })
+        })
+        .zip(u15s.iter_mut())
+        .for_each(|(val, place)| {
+            *place = val;
+        });
+    err
+}
+
 pub fn decode_utf32768_to_u15(
     mut utf32768: PBufRd<'_, u16>,
     mut u15s: PBufWr<'_, u16>,
 ) -> Result<bool, DecoderError> {
     let before = tripwire!(utf32768, u15s);
-
-    if utf32768.consume_push() {
-        u15s.push();
-    }
 
     if utf32768.is_aborted() && utf32768.consume_eof() {
         u15s.abort();
@@ -102,28 +122,9 @@ pub fn decode_utf32768_to_u15(
         let len = free_space_sizing(u15s.free_space(), data.len());
         if len > 0 {
             let space = u15s.space(len);
-            let tables = get_lookups();
 
-            let mut err: Option<DecoderError> = None;
-            data.iter()
-                .copied()
-                .map(|encoded| {
-                    tables
-                        .decode
-                        .get(encoded as usize)
-                        .copied()
-                        .filter(|&x| x != 0xFFFF)
-                        .unwrap_or_else(|| {
-                            err = Some(DecoderError::InvalidCodePoint(encoded));
-                            0xFFFF
-                        })
-                })
-                .zip(space.iter_mut())
-                .for_each(|(val, place)| {
-                    *place = val;
-                });
-
-            if let Some(e) = err {
+            if let Some(e) = decode_utf32768_stream(data, space) {
+                u15s.abort();
                 return Err(e);
             }
             utf32768.consume(len);
@@ -143,10 +144,16 @@ pub fn decode_utf32768_to_u15(
     Ok(before != after)
 }
 
-fn decode_full_block(src: &[u16; BYTE_SIZE], dst: &mut [u8; CODE_LEN]) {
+fn decode_full_block(src: &[u16; BYTE_SIZE], dst: &mut [u8; CODE_LEN]) -> Option<DecoderError> {
+    let mut err = None;
     IntoIterator::into_iter(
         src.iter()
             .copied()
+            .inspect(|&x| {
+                if x & 0x8000 != 0 {
+                    err = Some(DecoderError::UnexpectedEndOfStreamMarker)
+                }
+            })
             .enumerate()
             .map(|(idx, word)| (word as u128) << (CODE_LEN * idx))
             .reduce(core::ops::BitOr::bitor)
@@ -157,6 +164,7 @@ fn decode_full_block(src: &[u16; BYTE_SIZE], dst: &mut [u8; CODE_LEN]) {
     .for_each(|(val, place)| {
         *place = val;
     });
+    err
 }
 
 fn decode_partial_final_chunk(
@@ -222,20 +230,20 @@ pub fn decode_u15_to_bytes(
 
         while u15s.len() > threshold {
             let chunk: &[u16; BYTE_SIZE] = u15s.data()[..BYTE_SIZE].try_into().unwrap();
-            if chunk.iter().copied().any(|x| x & 0x8000 != 0) {
-                return Err(DecoderError::UnexpectedEndOfStreamMarker);
-            }
             let Some(space) = bytes.try_space(CODE_LEN) else {
                 backpressure = true;
                 break;
             };
-            decode_full_block(chunk, space.try_into().unwrap());
+            if let Some(err) = decode_full_block(chunk, space.try_into().unwrap()) {
+                bytes.abort();
+                return Err(err);
+            }
             bytes.commit(CODE_LEN);
             u15s.consume(BYTE_SIZE);
         }
 
         if !backpressure && is_final {
-            if bytes.is_eof() {
+            if bytes.is_eof() || u15s.len() > BYTE_SIZE {
                 return Err(DecoderError::UnexpectedEndOfStreamMarker);
             }
             if let Some(space) = bytes.try_space(CODE_LEN) {
