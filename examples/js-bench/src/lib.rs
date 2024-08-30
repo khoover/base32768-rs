@@ -5,6 +5,7 @@ use rand::{Rng, SeedableRng};
 use std::{
     hint::black_box,
     io::{ErrorKind, Read, Write},
+    ops::Range,
 };
 use wasm_bindgen::prelude::*;
 use web_sys::console;
@@ -147,20 +148,34 @@ fn bench_optimized_read_decode(bytes: &[u8]) -> f64 {
     writer.write_all(bytes).unwrap();
     let encoded = writer.finish().finish();
     let mut local_encoded = Vec::with_capacity(encoded.length() as usize);
-    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut decoded = vec![0; bytes.len()];
+    let slices: Vec<Range<usize>> = {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42023241994);
+        let mut start = 0;
+        std::iter::from_fn(|| {
+            (start < decoded.len()).then(|| {
+                let len = rng.gen_range(1..20);
+                let next_start = decoded.len().min(start + len);
+                let res = start..next_start;
+                start = next_start;
+                res
+            })
+        })
+        .collect()
+    };
     let start = Date::now();
     for _ in 0..100 {
-        decoded.clear();
         local_encoded.reserve(encoded.length() as usize);
         unsafe {
             local_encoded.set_len(encoded.length() as usize);
         }
         assert_eq!(encoded.length(), str_to_arr(&encoded, &mut local_encoded));
-        base32768::optimized::ReadDecoder::<_, 1920>::new(black_box(std::mem::take(
-            &mut local_encoded,
-        )))
-        .read_to_end(black_box(&mut decoded))
-        .unwrap();
+        let mut decoder = base32768::optimized::ReadDecoder::<_, 1920>::new(black_box(
+            std::mem::take(&mut local_encoded),
+        ));
+        for slice in slices.iter().cloned() {
+            decoder.read_exact(black_box(&mut decoded[slice])).unwrap();
+        }
     }
     (Date::now() - start) / 100.0
 }
@@ -247,7 +262,7 @@ fn bench_pipebuf_write_encode(bytes: &[u8]) -> f64 {
             |mut rd| {
                 if rd.consume_push() || rd.has_pending_eof() {
                     //if rd.consume_push() || rd.has_pending_eof() || rd.len() >= 480 {
-                    output = black_box(arr_to_str(rd.data()));
+                    output = output.concat(&arr_to_str(rd.data()));
                     rd.consume(rd.len());
                     rd.consume_eof();
                     true
@@ -365,17 +380,17 @@ impl<'a, F: for<'b> FnMut(PBufRd<'b, u8>) -> bool> Write for PipeBufUtf8Encoder<
 #[inline(never)]
 fn bench_pipebuf_write_encode_using_utf8(bytes: &[u8]) -> f64 {
     // let mut bytes_buf = PipeBuf::new();
-    // let mut utf32768_buf = PipeBuf::new();
+    let mut utf32768_buf = PipeBuf::new();
     const BUF_CAPACITY: usize = 2048;
     let mut bytes_buf = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
-    let mut utf32768_buf = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
+    // let mut utf32768_buf = PipeBuf::with_fixed_capacity(BUF_CAPACITY);
     let mut output = JsString::from("");
     let start = Date::now();
     for _ in 0..100 {
         let mut writer = black_box(PipeBufUtf8Encoder::new(
             |mut rd| {
-                // if rd.consume_push() || rd.has_pending_eof() {
-                if rd.consume_push() || rd.has_pending_eof() || rd.len() >= (3 * BUF_CAPACITY) / 4 {
+                if rd.consume_push() || rd.has_pending_eof() {
+                    // if rd.consume_push() || rd.has_pending_eof() || rd.len() >= (3 * BUF_CAPACITY) / 4 {
                     let s = unsafe { std::str::from_utf8_unchecked(rd.data()) };
                     output = output.concat(JsString::from(s).as_ref());
                     rd.consume(rd.len());
@@ -470,7 +485,21 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
         utf32768_buf.reset();
         encoded
     };
-    let mut output = Vec::new();
+    let mut decoded = vec![0; bytes.len()];
+    let slices: Vec<Range<usize>> = {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42023241994);
+        let mut start = 0;
+        std::iter::from_fn(|| {
+            (start < decoded.len()).then(|| {
+                let len = rng.gen_range(1..100);
+                let next_start = decoded.len().min(start + len);
+                let res = start..next_start;
+                start = next_start;
+                res
+            })
+        })
+        .collect()
+    };
 
     let start = Date::now();
     for _ in 0..100 {
@@ -505,11 +534,12 @@ fn bench_pipebuf_read_decode(bytes: &[u8]) -> f64 {
             &mut u15s_buf,
             &mut bytes_buf,
         );
-        reader.read_to_end(&mut output).unwrap();
+        for slice in slices.iter().cloned() {
+            reader.read_exact(black_box(&mut decoded[slice])).unwrap();
+        }
         utf32768_buf.reset();
         u15s_buf.reset();
         bytes_buf.reset();
-        output.clear();
     }
     (Date::now() - start) / 100.0
 }
